@@ -215,7 +215,85 @@ jobs:
     displayName: 'Cleanup GPG key'
   - task: PublishBuildArtifacts@1
     inputs:
-      pathtoPublish: '$(Build.ArtifactStagingDirectory)/deb' 
-      artifactName: 'deb' 
+      pathtoPublish: '$(Build.ArtifactStagingDirectory)/deb'
+      artifactName: 'deb'
       publishLocation: 'Container'
     displayName: Publish
+
+- job: rpm
+  pool:
+    vmImage: 'ubuntu-16.04'
+  steps:
+  - task: DownloadBuildArtifacts@0
+    inputs:
+      buildType: 'specific'
+      project: 'imobiledevice-net'
+      pipeline: $(imobiledevicenetPipeline)
+      buildVersionToDownload: 'specific'
+      buildId: $(imobiledevicenetBuild)
+      downloadType: 'single'
+      artifactName: 'sources'
+      downloadPath: '$(System.ArtifactsDirectory)'
+    displayName: 'Download sources'
+  - task: DownloadBuildArtifacts@0
+    inputs:
+      buildType: 'specific'
+      project: 'imobiledevice-net'
+      pipeline: $(imobiledevicenetPipeline)
+      buildVersionToDownload: 'specific'
+      buildId: $(imobiledevicenetBuild)
+      downloadType: 'single'
+      artifactName: 'imobiledevice-net'
+      downloadPath: '$(System.ArtifactsDirectory)'
+    displayName: 'Download imobiledevice-net artifacts'
+  - script: |
+      sudo apt-get install -y osc libxml2-utils
+    displayName: 'Install dependencies'
+  - script: |
+      echo "[general]" > ~/.oscrc
+      echo "apiurl = https://api.opensuse.org" >> ~/.oscrc
+      echo "[https://api.opensuse.org]" >> ~/.oscrc
+      echo "user = $OSC_USER" >> ~/.oscrc
+      echo "pass = $OSC_PASSWORD" >> ~/.oscrc
+    displayName: 'Configure OSC'
+  - script: |
+      set -e
+      version_number=`xmllint --xpath 'Project/PropertyGroup/MobileDeviceDotNetNuGetVersion/text()' $SYSTEM_ARTIFACTSDIRECTORY/imobiledevice-net/Directory.Build.props`
+
+      mkdir -p $BUILD_ARTIFACTSTAGINGDIRECTORY/osc
+      cd $BUILD_ARTIFACTSTAGINGDIRECTORY/osc
+      osc checkout home:qmfrederik
+
+      declare -A package_versions
+      declare -A package_baseline_versions
+      package_versions=( ["libplist"]="2.0.2" ["libusbmuxd"]="1.12.0" ["libimobiledevice"]="1.2.2" ["usbmuxd"]="1.1.2")
+      package_baseline_versions=( ["libplist"]="2.0.1" ["libusbmuxd"]="1.1.0" ["libimobiledevice"]="1.2.1" ["usbmuxd"]="1.1.0")
+
+      for package in libplist libusbmuxd libimobiledevice usbmuxd
+      do
+          package_version=${package_versions[$package]}
+          package_baseline_version=${package_baseline_versions[$package]}
+
+          echo Packaging ${package}_${package_version}.${version_number}
+
+          # Repackage the .tar.gz file so that the top-level directory is named ${package}-${package_version}.${version_number}
+          cd $SYSTEM_ARTIFACTSDIRECTORY/sources/
+          mkdir -p ${package}-${package_version}.${version_number}
+          tar -C ${package}-${package_version}.${version_number} -xvzf $package.orig.tar.gz
+          tar -cvf ${package}-${package_version}.${version_number}.tar.gz ${package}-${package_version}.${version_number}
+
+          cd $BUILD_ARTIFACTSTAGINGDIRECTORY/osc/home\:qmfrederik/$package/
+          osc rm *
+
+          cp $SYSTEM_ARTIFACTSDIRECTORY/sources/$package-${package_version}.${version_number}.tar.gz ./${package}-${package_version}.${version_number}.tar.gz
+          tar -xvzf $SYSTEM_ARTIFACTSDIRECTORY/sources/$package.orig.tar.gz ${package}.spec
+          
+          sed -i "s/${package_baseline_version}.build/${package_version}.${version_number}/" ${package}.spec
+          cat ${package}.spec
+          osc add *
+          osc commit -m "Version ${package}_${package_version}.${version_number} - Azure Pipelines ${BUILD_BUILDNUMBER}"
+      done
+    displayName: Update OSC archives
+  - script: |
+      rm -rf ~/.oscrc
+    displayName: 'Cleanup OSC key'
